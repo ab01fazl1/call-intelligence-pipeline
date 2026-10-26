@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: gateway
+    static_configs: [{ targets: ["gateway:8000"] }]
+
+  - job_name: outbox-relay
+    static_configs: [{ targets: ["outbox-relay:9100"] }]
+
+  # Docker's DNS returns one A record per replica, so scaled workers are discovered.
+  - job_name: workers
+    dns_sd_configs:
+      - names: [worker-preprocess, worker-asr, worker-analysis, worker-deadletter]
+        type: A
+        port: 9100
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: [__meta_dns_name]
+        target_label: service
+
+  - job_name: rabbitmq
+    metrics_path: /metrics/per-object
+    static_configs: [{ targets: ["rabbitmq:15692"] }]

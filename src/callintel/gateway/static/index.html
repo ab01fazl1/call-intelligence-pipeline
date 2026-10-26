@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call Pipeline</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1c1d1f; --muted: #6b6f76; --line: #e3e3df;
+    --accent: #2357d8; --ok: #1d7f4e; --warn: #a86400; --bad: #c0362c; --chip: #efefeb;
+    --agent: #eaf0ff; --customer: #f1f1ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141517; --panel: #1c1d20; --ink: #e8e8e6; --muted: #9a9ea6; --line: #2c2e33;
+      --accent: #7aa2ff; --ok: #4cc38a; --warn: #f0a640; --bad: #ff7a6e; --chip: #26282c;
+      --agent: #1f2a44; --customer: #26282c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 16px; padding: 18px 24px;
+           border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .live { color: var(--muted); font-size: 12px; }
+  header .live b { color: var(--ok); }
+  .stats { display: flex; gap: 20px; margin-left: auto; font-size: 13px; color: var(--muted); }
+  .stats span b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px;
+         padding: 16px 24px; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+            overflow: hidden; }
+  section h2 { font-size: 13px; margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--line);
+               color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--line);
+           white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); font-weight: 500; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover, tbody tr.sel { background: var(--chip); }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  .scroll { max-height: calc(100vh - 150px); overflow: auto; }
+  .status { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px;
+            background: var(--chip); }
+  .status.completed { color: var(--ok); } .status.failed { color: var(--bad); }
+  .status.transcribing, .status.preprocessing, .status.analyzing, .status.received { color: var(--accent); }
+  .flag { display: inline-block; margin: 0 4px 2px 0; padding: 0 6px; border-radius: 4px;
+          font-size: 11px; background: var(--chip); color: var(--muted); }
+  .flag.critical { color: var(--bad); } .flag.major { color: var(--warn); }
+  .detail { padding: 14px; }
+  .detail .empty { color: var(--muted); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin-bottom: 14px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .stages { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .stage { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
+  .stage b { display: block; font-weight: 600; }
+  .qa { margin-bottom: 14px; }
+  .qa table td, .qa table th { padding: 6px 8px; }
+  .transcript { display: flex; flex-direction: column; gap: 6px; }
+  .utt { max-width: 85%; padding: 6px 10px; border-radius: 8px; direction: rtl; text-align: right;
+         font-size: 15px; }
+  .utt small { display: block; direction: ltr; text-align: left; color: var(--muted); font-size: 11px; }
+  .utt.agent { background: var(--agent); align-self: flex-start; }
+  .utt.customer, .utt.unknown { background: var(--customer); align-self: flex-end; }
+  .error { color: var(--bad); }
+  h3 { font-size: 13px; margin: 16px 0 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Call Intelligence Pipeline</h1>
+  <span class="live" id="live">connecting…</span>
+  <div class="stats" id="stats"></div>
+</header>
+<main>
+  <section>
+    <h2>Recent calls</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Received</th><th>Call</th><th>Status</th><th class="num">Dur.</th>
+          <th class="num">Score</th><th>Flags</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+  <section>
+    <h2>Call detail</h2>
+    <div class="scroll detail" id="detail"><p class="empty">Select a call.</p></div>
+  </section>
+</main>
+<script>
+const SEVERITY = {
+  prohibited_promise: "critical", investment_advice: "critical",
+  missing_identity_verification: "major", unannounced_hold: "major",
+};
+const calls = new Map();
+let selected = null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const time = (iso) => iso ? new Date(iso).toLocaleTimeString() : "";
+const flags = (list) => (list || []).map((f) => `<span class="flag ${SEVERITY[f] || ""}">${esc(f)}</span>`).join("");
+
+function renderRows() {
+  const rows = [...calls.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 200);
+  $("rows").innerHTML = rows.map((c) => `
+    <tr data-id="${c.id}" class="${c.id === selected ? "sel" : ""}">
+      <td>${time(c.created_at)}</td>
+      <td title="${c.id}">${esc(c.external_id || c.id.slice(0, 8))}</td>
+      <td><span class="status ${c.status}">${c.status}</span></td>
+      <td class="num">${c.duration_s ? c.duration_s.toFixed(0) + "s" : ""}</td>
+      <td class="num">${c.score ?? ""}</td>
+      <td>${flags(c.flags)}</td>
+    </tr>`).join("");
+}
+
+async function refreshStats() {
+  try {
+    const s = await (await fetch("/v1/analytics/summary")).json();
+    const by = s.calls_by_status || {};
+    const inflight = ["received", "preprocessing", "transcribing", "analyzing"].reduce((n, k) => n + (by[k] || 0), 0);
+    $("stats").innerHTML = `
+      <span>in flight <b>${inflight}</b></span>
+      <span>completed <b>${by.completed || 0}</b></span>
+      <span>failed <b>${by.failed || 0}</b></span>
+      <span>avg score (${esc(s.analyzer_version)}) <b>${s.average_score ?? "–"}</b></span>
+      <span>violations <b>${s.compliance_violations}</b></span>
+      <span>p95 e2e <b>${s.end_to_end_seconds.p95 ? s.end_to_end_seconds.p95.toFixed(1) + "s" : "–"}</b></span>
+      <span>outbox <b>${s.outbox_backlog}</b></span>`;
+  } catch (e) { /* gateway restarting */ }
+}
+
+async function loadCalls() {
+  const list = await (await fetch("/v1/calls?limit=200")).json();
+  list.forEach((c) => calls.set(c.id, c));
+  renderRows();
+}
+
+async function showDetail(id) {
+  selected = id;
+  renderRows();
+  const c = await (await fetch(`/v1/calls/${id}`)).json();
+  const stages = c.stages.map((s) => `
+    <div class="stage"><b>${s.stage}</b>${s.status} · ${s.attempts} attempt${s.attempts === 1 ? "" : "s"}
+    <br><small>${esc(s.version)}</small>${s.last_error ? `<br><small class="error">${esc(s.last_error)}</small>` : ""}</div>`).join("");
+  const qa = c.qa_results.length ? `<div class="qa"><h3>QA results</h3><table>
+    <thead><tr><th>Version</th><th class="num">Score</th><th>Compliance</th><th>Flags</th></tr></thead><tbody>
+    ${c.qa_results.map((q) => `<tr><td>${esc(q.analyzer_version)}</td><td class="num">${q.score}</td>
+      <td>${q.compliance}</td><td style="white-space:normal">${flags(q.flags)}</td></tr>`).join("")}
+    </tbody></table></div>` : "";
+  const segs = c.transcript ? c.transcript.segments.map((s) => `
+    <div class="utt ${s.speaker}"><small>${s.speaker} · ${s.start.toFixed(1)}s</small>${esc(s.text)}</div>`).join("") : "";
+  $("detail").innerHTML = `
+    <dl class="kv">
+      <dt>Call</dt><dd>${esc(c.external_id || "")} <small>${c.id}</small></dd>
+      <dt>Status</dt><dd><span class="status ${c.status}">${c.status}</span> ${c.error ? `<span class="error">${esc(c.error)}</span>` : ""}</dd>
+      <dt>Audio</dt><dd>${c.duration_s ? c.duration_s.toFixed(1) + "s" : "–"}, ${c.channels ?? "?"} ch, ${esc(c.attributes.source_format || c.content_type)}</dd>
+      <dt>Trace</dt><dd><code>${c.trace_id}</code></dd>
+      ${c.transcript ? `<dt>ASR</dt><dd>${esc(c.transcript.model)} · RTF ${c.transcript.real_time_factor ?? "–"}</dd>` : ""}
+    </dl>
+    <div class="stages">${stages}</div>
+    ${qa}
+    ${segs ? `<h3>Transcript</h3><div class="transcript">${segs}</div>` : ""}`;
+}
+
+$("rows").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr[data-id]");
+  if (tr) showDetail(tr.dataset.id);
+});
+
+function connect() {
+  const es = new EventSource("/v1/events");
+  es.onopen = () => { $("live").innerHTML = "<b>●</b> live"; };
+  es.onerror = () => { $("live").textContent = "reconnecting…"; };
+  es.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+    const c = calls.get(ev.call_id) || { id: ev.call_id, created_at: ev.at, flags: [] };
+    c.status = ev.status;
+    if (ev.type === "received") c.external_id = ev.data.external_id;
+    if (ev.data && ev.data.duration_s) c.duration_s = ev.data.duration_s;
+    if (ev.type === "completed") { c.score = ev.data.score; c.flags = ev.data.flags; }
+    if (ev.type === "failed") c.error = ev.data.error;
+    calls.set(c.id, c);
+    renderRows();
+    if (ev.call_id === selected && ["stage.completed", "completed", "failed", "stage.retrying"].includes(ev.type)) {
+      showDetail(selected);
+    }
+  };
+}
+
+loadCalls().then(connect);
+refreshStats();
+setInterval(refreshStats, 3000);
+</script>
+</body>
+</html>

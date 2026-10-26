@@ -1,0 +1,27 @@
+# Real ASR: docker compose -f compose.yaml -f compose.whisper.yaml up -d --build
+# Builds a second image with faster-whisper and downloads the model on first start
+# (`small` is ~480 MB) into a volume, through HF_ENDPOINT if set.
+services:
+  worker-asr:
+    image: callintel-whisper:latest
+    build:
+      context: .
+      args:
+        REGISTRY_PREFIX: ${REGISTRY_PREFIX:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        APT_MIRROR: ${APT_MIRROR:-}
+        REQUIREMENTS: whisper
+    environment:
+      ASR_BACKEND: whisper
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      WHISPER_COMPUTE_TYPE: int8
+      WHISPER_CPU_THREADS: ${WHISPER_CPU_THREADS:-4}
+      ASR_TIMEOUT_RTF: "3.0"
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HOME: /app/hf
+    volumes:
+      - ./data:/app/data:ro
+      - hf-cache:/app/hf
+
+volumes:
+  hf-cache:
